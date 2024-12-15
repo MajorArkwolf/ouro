@@ -1,7 +1,6 @@
 use clap::Parser;
 use eyre::bail;
 use natpmp::{AsyncUdpSocket, NatpmpAsync, Protocol, Response};
-use std::error::Error;
 use std::net::Ipv4Addr;
 use tokio::net::TcpListener;
 
@@ -79,8 +78,8 @@ where
 }
 
 async fn redirect_tcp_traffic(external_port: u16, local_port: u16) -> eyre::Result<()> {
-    let listener = TcpListener::bind(("0.0.0.0", external_port)).await?;
-    let local_addr = ("127.0.0.1", local_port);
+    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, external_port)).await?;
+    let local_addr = (Ipv4Addr::LOCALHOST, local_port);
 
     loop {
         let (mut inbound, _) = listener.accept().await?;
@@ -102,8 +101,8 @@ async fn redirect_tcp_traffic(external_port: u16, local_port: u16) -> eyre::Resu
 
 async fn redirect_udp_traffic(external_port: u16, local_port: u16) -> eyre::Result<()> {
     // Bind a UDP socket to the external port
-    let socket = tokio::net::UdpSocket::bind(("0.0.0.0", external_port)).await?;
-    let local_addr = ("127.0.0.1", local_port);
+    let socket = tokio::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, external_port)).await?;
+    let local_addr = (Ipv4Addr::LOCALHOST, local_port);
 
     let mut buf = vec![0u8; 2048]; // Buffer for receiving packets
 
@@ -113,7 +112,7 @@ async fn redirect_udp_traffic(external_port: u16, local_port: u16) -> eyre::Resu
         println!("Received {} bytes from external client: {}", len, src);
 
         // Create a new UDP socket for communicating with the local service
-        let local_socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+        let local_socket = tokio::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
         local_socket.connect(local_addr).await?;
 
         // Forward the packet to the local port
@@ -136,14 +135,14 @@ async fn redirect_udp_traffic(external_port: u16, local_port: u16) -> eyre::Resu
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> eyre::Result<()> {
     let Args {
         gateway,
         local_port,
         external_port,
         lease_time,
         refresh_interval,
-    } = Args::parse();
+    } = Args::try_parse()?;
 
     let client = natpmp::new_tokio_natpmp_with(gateway).await?;
 
