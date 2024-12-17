@@ -56,13 +56,13 @@ impl ServiceManager {
 
     async fn verify_service(&self) -> eyre::Result<()> {
         let status = Command::new("systemctl")
-            .args(["status", &format!("{}.service", self.service_name)])
+            .args(["cat", &format!("{}.service", self.service_name)])
             .output()
             .await
             .wrap_err("Failed to check service status")?;
             
         if !status.status.success() {
-            bail!("Service {} not found", self.service_name);
+            bail!("Service {} not found.", self.service_name);
         }
         Ok(())
     }
