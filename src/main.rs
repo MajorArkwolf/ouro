@@ -197,7 +197,7 @@ async fn run_service(
     service.verify_service().await?;
 
     // Initial port mapping and service start
-    let ports = map_ports(&client, None).await?;
+    let ports = map_ports(&client).await?;
     manage_firewall(&args.vpn_interface, Some(&ports), None).await?;
     service.start(ports.clone()).await?;
     
@@ -206,7 +206,7 @@ async fn run_service(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                match map_ports(&client, service.current_ports.as_ref().map(|p| p.tcp)).await {
+                match map_ports(&client).await {
                     Ok(new_ports) => {
                         if Some(&new_ports) != service.current_ports.as_ref() {
                             info!("Ports changed from {:?} to {:?}", service.current_ports, new_ports);
@@ -241,13 +241,12 @@ async fn run_service(
 
 async fn map_ports<S>(
     client: &NatpmpAsync<S>,
-    port: Option<u16>,
 ) -> eyre::Result<Ports>
 where
     S: AsyncUdpSocket,
 {
     let local_port = 1;  // Use port 1 as we're only interested in getting an external port
-    let requested_port = port.unwrap_or(0);  // Use 0 to request any available port
+    let requested_port = 0;  // Use 0 to request any available port
 
     // Send UDP port mapping request
     client
