@@ -19,7 +19,7 @@
         };
       in {
         packages = {
-          default = pkgs.rustPlatform.buildRustPackage {
+          default = pkgs.rustPlatform.buildRustPackage rec {
             pname = "vlnr";
             version = "0.1.1";
 
@@ -36,18 +36,26 @@
             buildInputs = with pkgs; [
               iptables
             ];
+
+            shellHook = ''
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath buildInputs}"
+            '';
           };
           
           vlnr = self'.packages.default;
         };
 
-        devShells.default = pkgs.mkShell {
+        devShells.default = pkgs.mkShell rec {
           buildInputs = with pkgs; [
             rust-bin.stable.latest.default
             rust-analyzer
             pkg-config
             clang
+            systemdLibs
           ];
+          shellHook = ''
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath buildInputs}"
+          '';
         };
       };
     };
