@@ -55,15 +55,35 @@ impl ServiceManager {
     }
 
     async fn verify_service(&self) -> eyre::Result<()> {
+        let service_name = format!("{}.service", self.service_name);
+        
+        // Check if service exists
+        let exists = Command::new("systemctl")
+            .args(["cat", &service_name])
+            .output()
+            .await
+            .wrap_err("Failed to check service existence")?;
+            
+        if !exists.status.success() {
+            bail!("Service {} not found in systemd", self.service_name);
+        }
+
+        // Check if service is running and stop it if it is
         let status = Command::new("systemctl")
-            .args(["cat", &format!("{}.service", self.service_name)])
+            .args(["is-active", &service_name])
             .output()
             .await
             .wrap_err("Failed to check service status")?;
-            
-        if !status.status.success() {
-            bail!("Service {} not found.", self.service_name);
+
+        if status.status.success() {
+            info!("Service {} is currently running, stopping it first", self.service_name);
+            Command::new("systemctl")
+                .args(["stop", &service_name])
+                .status()
+                .await
+                .wrap_err("Failed to stop running service")?;
         }
+
         Ok(())
     }
 
