@@ -245,8 +245,8 @@ async fn map_ports<S>(
 where
     S: AsyncUdpSocket,
 {
-    let local_port = 1;  // Use port 1 as we're only interested in getting an external port
-    let requested_port = 0;  // Use 0 to request any available port
+    let local_port = 0;
+    let requested_port = 1;
 
     // Send UDP port mapping request
     client
