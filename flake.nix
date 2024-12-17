@@ -33,9 +33,9 @@
               pkg-config
             ];
 
-            # buildInputs = with pkgs; [
-            #   iptables
-            # ];
+            buildInputs = with pkgs; [
+              iptables
+            ];
           };
           
           vlnr = self'.packages.default;
@@ -47,7 +47,6 @@
             rust-analyzer
             pkg-config
             clang
-            libc
           ];
         };
       };

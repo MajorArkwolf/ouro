@@ -1,5 +1,5 @@
 use clap::Parser;
-use eyre::bail;
+use eyre::{bail, WrapErr};  // Add WrapErr import
 use natpmp::{AsyncUdpSocket, NatpmpAsync, Protocol, Response};
 use std::net::Ipv4Addr;
 use tokio::net::TcpListener;
@@ -36,7 +36,7 @@ struct Args {
     vpn_interface: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]  // Add Clone derive
 struct Ports {
     udp: u16,
     tcp: u16,
@@ -86,7 +86,7 @@ where
 }
 
 async fn manage_iptables(interface: &str, new_port: u16, old_port: Option<u16>) -> eyre::Result<()> {
-    println!("Managing iptables rules for ports: new={}, old={:?}", new_port, old_port);
+    info!("Managing iptables rules for ports: new={}, old={:?}", new_port, old_port);
 
     // Add new rule if it doesn't exist
     let new_status = Command::new("sudo")
@@ -105,7 +105,7 @@ async fn manage_iptables(interface: &str, new_port: u16, old_port: Option<u16>) 
         ])
         .status()?;
 
-    if !new_status.success() {
+    if !new_status.success() {  // Fixed parentheses
         Command::new("sudo")
             .args([
                 "iptables",
@@ -143,63 +143,6 @@ async fn manage_iptables(interface: &str, new_port: u16, old_port: Option<u16>) 
     }
 
     Ok(())
-}
-
-async fn redirect_tcp_traffic(external_port: u16, local_port: u16) -> eyre::Result<()> {
-    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, external_port)).await?;
-    let local_addr = (Ipv4Addr::LOCALHOST, local_port);
-
-    loop {
-        let (mut inbound, _) = listener.accept().await?;
-
-        let mut outbound = tokio::net::TcpStream::connect(local_addr).await?;
-
-        tokio::spawn(async move {
-            let (mut ri, mut wi) = inbound.split();
-            let (mut ro, mut wo) = outbound.split();
-
-            tokio::try_join!(
-                tokio::io::copy(&mut ri, &mut wo),
-                tokio::io::copy(&mut ro, &mut wi),
-            )
-            .ok();
-        });
-    }
-}
-
-async fn redirect_udp_traffic(external_port: u16, local_port: u16) -> eyre::Result<()> {
-    // Bind a UDP socket to the external port
-    let socket = tokio::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, external_port)).await?;
-    let local_addr = (Ipv4Addr::LOCALHOST, local_port);
-
-    let mut buf = vec![0u8; 2048]; // Buffer for receiving packets
-
-    loop {
-        // Receive a packet from the external port
-        let (len, src) = socket.recv_from(&mut buf).await?;
-        println!("Received {} bytes from external client: {}", len, src);
-
-        // Create a new UDP socket for communicating with the local service
-        let local_socket = tokio::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
-        local_socket.connect(local_addr).await?;
-
-        // Forward the packet to the local port
-        local_socket.send(&buf[..len]).await?;
-        println!(
-            "Forwarded {} bytes to local service at {:?}",
-            len, local_addr
-        );
-
-        // Receive a response from the local service
-        let response_len = local_socket.recv(&mut buf).await?;
-        println!(
-            "Received {} bytes from local service, sending back to {}",
-            response_len, src
-        );
-
-        // Send the response back to the original sender
-        socket.send_to(&buf[..response_len], src).await?;
-    }
 }
 
 struct PortForwarder {
@@ -269,20 +212,21 @@ async fn run_port_mapping_service(
     shutdown: broadcast::Receiver<()>,
 ) -> eyre::Result<()> {
     let client = natpmp::new_tokio_natpmp_with(args.gateway).await?;
-    let mut port_history = None;
     let external_ports = Arc::new(tokio::sync::RwLock::new(Ports { tcp: 0, udp: 0 }));
+    let mut current_port = None;
     
     // Initial port mapping
     let ports = map_ports(&client, args.local_port, args.external_port, args.lease_time).await?;
-    manage_iptables(&args.vpn_interface, ports.tcp, None).await?;
+    manage_iptables(&args.vpn_interface, ports.tcp, current_port).await?;  // Use current_port here
+    let ports_clone = ports.clone();
     *external_ports.write().await = ports;
-    port_history = Some(ports.tcp);
+    current_port = Some(ports_clone.tcp);
     
     info!(
         local_port = args.local_port,
-        external_tcp = ports.tcp,
-        external_udp = ports.udp,
-        "Initial port mapping successful"
+        external_tcp = ports_clone.tcp,
+        external_udp = ports_clone.udp,
+        "Initial port mapping successful. Previous port: {:?}", current_port  // Log the port change
     );
 
     let mut forwarder = PortForwarder {
@@ -307,20 +251,25 @@ async fn run_port_mapping_service(
             _ = interval.tick() => {
                 match map_ports(&client, args.local_port, args.external_port, args.lease_time).await {
                     Ok(new_ports) => {
-                        if let Err(e) = manage_iptables(&args.vpn_interface, new_ports.tcp, port_history).await {
+                        let old_port = current_port;  // Store for logging
+                        if let Err(e) = manage_iptables(&args.vpn_interface, new_ports.tcp, current_port).await {
                             error!("Failed to update iptables: {}", e);
                         }
+                        let new_ports_clone = new_ports.clone();
                         *external_ports.write().await = new_ports;
-                        port_history = Some(new_ports.tcp);
-                        info!("Port mapping refreshed successfully");
+                        current_port = Some(new_ports_clone.tcp);
+                        info!(
+                            "Port mapping refreshed successfully. Old port: {:?}, New port: {}",
+                            old_port,
+                            new_ports_clone.tcp
+                        );
                     }
                     Err(e) => error!("Port mapping refresh failed: {}", e),
                 }
             }
             _ = shutdown.recv() => {
                 info!("Port mapping service shutting down");
-                // Cleanup iptables rules
-                if let Some(port) = port_history {
+                if let Some(port) = current_port {
                     if let Err(e) = manage_iptables(&args.vpn_interface, 0, Some(port)).await {
                         error!("Failed to cleanup iptables: {}", e);
                     }
