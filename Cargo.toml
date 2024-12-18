@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 natpmp = "0.5.0"
 eyre = { version = "0.6", features = ["auto-install"] }
 tracing = "0.1"
