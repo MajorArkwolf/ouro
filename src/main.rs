@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::fs;
 use tokio::process::Command;
 use tokio::sync::broadcast;
-use tracing::{error, info};
+use tracing::{error, info, debug};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -143,10 +143,10 @@ impl TransmissionManager {
 async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: Option<&Ports>) -> eyre::Result<()> {
     info!("Managing firewall rules: new={:?}, old={:?}", new_ports, old_ports);
 
-    // Remove old rules if they exist
+    // Remove old rules if they exist - don't error if they don't
     if let Some(old) = old_ports {
         for (proto, port) in [("tcp", old.tcp), ("udp", old.udp)] {
-            Command::new("iptables")
+            let status = Command::new("iptables")
                 .args([
                     "-D", "INPUT",
                     "-p", proto,
@@ -155,16 +155,19 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
                     "-i", interface
                 ])
                 .status()
-                .await
-                .wrap_err(format!("Failed to remove old {} rule", proto))?;
+                .await?;
+            
+            // Only log if debug logging is enabled
+            if !status.success() {
+                debug!("Rule didn't exist for {}/{}", proto, port);
+            }
         }
     }
 
-    // Add new rules
+    // Add new rules only if they don't exist
     if let Some(new) = new_ports {
         for (proto, port) in [("tcp", new.tcp), ("udp", new.udp)] {
-            // Check if rule exists
-            let check = Command::new("iptables")
+            let exists = Command::new("iptables")
                 .args([
                     "-C", "INPUT",
                     "-p", proto,
@@ -173,10 +176,10 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
                     "-i", interface
                 ])
                 .status()
-                .await
-                .wrap_err(format!("Failed to check {} rule", proto))?;
+                .await?
+                .success();
 
-            if !check.success() {
+            if !exists {
                 Command::new("iptables")
                     .args([
                         "-A", "INPUT",
@@ -188,6 +191,8 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
                     .status()
                     .await
                     .wrap_err(format!("Failed to add new {} rule", proto))?;
+                
+                info!("Added new firewall rule for {}/{}", proto, port);
             }
         }
     }
