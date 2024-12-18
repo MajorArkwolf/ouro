@@ -149,15 +149,16 @@ impl TransmissionManager {
 async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: Option<&Ports>) -> eyre::Result<()> {
     // Skip if no changes needed
     if new_ports == old_ports {
+        debug!("Firewall rules unchanged, skipping update");
         return Ok(());
     }
 
     info!("Updating firewall rules");
 
-    // Remove old rules if they exist - don't error if they don't
+    // Remove old rules if they exist
     if let Some(old) = old_ports {
         for (proto, port) in [("tcp", old.tcp), ("udp", old.udp)] {
-            let _ = Command::new("iptables")
+            Command::new("iptables")
                 .args([
                     "-D", "INPUT",
                     "-p", proto,
@@ -165,15 +166,17 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
                     "-j", "ACCEPT",
                     "-i", interface
                 ])
-                .output()
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
                 .await?;
         }
     }
 
-    // Add new rules only if they don't exist
+    // Add new rules
     if let Some(new) = new_ports {
         for (proto, port) in [("tcp", new.tcp), ("udp", new.udp)] {
-            // Use output() instead of status() to suppress stderr
+            // Check if rule exists
             let exists = Command::new("iptables")
                 .args([
                     "-C", "INPUT",
@@ -182,13 +185,14 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
                     "-j", "ACCEPT",
                     "-i", interface
                 ])
-                .output()
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
                 .await?
-                .status
                 .success();
 
             if !exists {
-                let result = Command::new("iptables")
+                Command::new("iptables")
                     .args([
                         "-A", "INPUT",
                         "-p", proto,
@@ -196,14 +200,12 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
                         "-j", "ACCEPT",
                         "-i", interface
                     ])
-                    .output()
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
                     .await?;
                 
-                if result.status.success() {
-                    info!("Added firewall rule for {}/{}", proto, port);
-                } else {
-                    error!("Failed to add firewall rule for {}/{}", proto, port);
-                }
+                info!("Added firewall rule for {}/{}", proto, port);
             }
         }
     }
@@ -220,16 +222,24 @@ async fn run_service(
     let mut interval = tokio::time::interval(Duration::from_secs(45));
 
     // Initial port mapping
-    let ports = map_ports(&client).await?;
-    manager.apply_ports(&args.vpn_interface, &ports, None).await?;
+    let initial_ports = map_ports(&client).await?;
+    manager.apply_ports(&args.vpn_interface, &initial_ports, None).await?;
 
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                // Just refresh the NAT-PMP mapping, don't reconfigure unless ports change
-                if let Err(e) = map_ports(&client).await {
-                    error!("Port mapping refresh failed: {}", e);
-                    tokio::time::sleep(Duration::from_secs(60)).await;
+                // Just refresh the NAT-PMP mapping without reconfiguring
+                match map_ports(&client).await {
+                    Ok(new_ports) => {
+                        if new_ports != initial_ports {
+                            // Only reconfigure if ports actually changed
+                            manager.apply_ports(&args.vpn_interface, &new_ports, manager.current_ports().as_ref()).await?;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Port mapping refresh failed: {}", e);
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                    }
                 }
             }
             _ = shutdown.recv() => {
