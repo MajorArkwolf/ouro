@@ -222,7 +222,10 @@ async fn run_service(
     let mut interval = tokio::time::interval(Duration::from_secs(45));
 
     // Initial port mapping
+    info!("Requesting initial port mapping...");
     let initial_ports = map_ports(&client).await?;
+    info!("Got initial ports: TCP={}, UDP={}", initial_ports.tcp, initial_ports.udp);
+    
     manager.apply_ports(&args.vpn_interface, &initial_ports, None).await?;
 
     loop {
@@ -231,9 +234,19 @@ async fn run_service(
                 // Just refresh the NAT-PMP mapping without reconfiguring
                 match map_ports(&client).await {
                     Ok(new_ports) => {
+                        info!(
+                            current_tcp = initial_ports.tcp,
+                            current_udp = initial_ports.udp,
+                            new_tcp = new_ports.tcp,
+                            new_udp = new_ports.udp,
+                            "Checking port mapping"
+                        );
+                        
                         if new_ports != initial_ports {
-                            // Only reconfigure if ports actually changed
+                            info!("Ports changed, reconfiguring service");
                             manager.apply_ports(&args.vpn_interface, &new_ports, manager.current_ports().as_ref()).await?;
+                        } else {
+                            debug!("Ports unchanged, keeping current configuration");
                         }
                     }
                     Err(e) => {
@@ -289,13 +302,12 @@ async fn try_map_ports<S>(client: &NatpmpAsync<S>) -> eyre::Result<Ports>
 where
     S: AsyncUdpSocket,
 {
-    // Send UDP port mapping request
+    debug!("Requesting UDP port mapping...");
     client
         .send_port_mapping_request(Protocol::UDP, LOCAL_PORT, LOCAL_PORT, PORT_MAPPING_LIFETIME)
         .await
         .wrap_err("Failed to send UDP mapping request")?;
 
-    // Await and process UDP response
     let udp_response = client.read_response_or_retry().await
         .wrap_err("Failed to receive UDP mapping response")?;
     
@@ -303,14 +315,14 @@ where
         Response::UDP(mapping) => mapping.public_port(),
         _ => bail!("Unexpected UDP response type"),
     };
+    debug!("Got UDP port: {}", udp_mapped_port);
 
-    // Send TCP port mapping request
+    debug!("Requesting TCP port mapping...");
     client
         .send_port_mapping_request(Protocol::TCP, LOCAL_PORT, LOCAL_PORT, PORT_MAPPING_LIFETIME)
         .await
         .wrap_err("Failed to send TCP mapping request")?;
 
-    // Await and process TCP response
     let tcp_response = client.read_response_or_retry().await
         .wrap_err("Failed to receive TCP mapping response")?;
         
@@ -318,6 +330,7 @@ where
         Response::TCP(mapping) => mapping.public_port(),
         _ => bail!("Unexpected TCP response type"),
     };
+    debug!("Got TCP port: {}", tcp_mapped_port);
 
     Ok(Ports {
         udp: udp_mapped_port,
