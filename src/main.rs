@@ -36,12 +36,53 @@ struct Ports {
     tcp: u16,
 }
 
-trait PortManager: Send {
-    fn apply_ports(&mut self, interface: &str, ports: &Ports, old_ports: Option<&Ports>) -> eyre::Result<()>;
-    fn stop(&mut self) -> eyre::Result<()>;
-    fn current_ports(&self) -> Option<Ports>;
+#[derive(Debug)]
+enum PortManager {
+    Slskd(SlskdManager),
+    Transmission(TransmissionManager),
 }
 
+impl PortManager {
+    async fn apply_ports(&mut self, interface: &str, ports: &Ports, old_ports: Option<&Ports>) -> eyre::Result<()> {
+        match self {
+            Self::Slskd(m) => {
+                manage_firewall(interface, Some(ports), old_ports).await?;
+                m.update_service(ports).await?;
+                m.current_ports = Some(ports.clone());
+            }
+            Self::Transmission(m) => {
+                manage_firewall(interface, Some(ports), old_ports).await?;
+                m.update_service(ports).await?;
+                m.current_ports = Some(ports.clone());
+            }
+        }
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> eyre::Result<()> {
+        match self {
+            Self::Slskd(_) => {
+                Command::new("systemctl")
+                    .args(["stop", "slskd.service"])
+                    .status()
+                    .await?;
+            }
+            Self::Transmission(_) => {
+                // Transmission doesn't need explicit stopping
+            }
+        }
+        Ok(())
+    }
+
+    fn current_ports(&self) -> Option<Ports> {
+        match self {
+            Self::Slskd(m) => m.current_ports.clone(),
+            Self::Transmission(m) => m.current_ports.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct SlskdManager {
     current_ports: Option<Ports>,
 }
@@ -76,35 +117,8 @@ impl SlskdManager {
         Ok(())
     }
 }
-impl PortManager for SlskdManager {
-    fn apply_ports(&mut self, interface: &str, ports: &Ports, old_ports: Option<&Ports>) -> eyre::Result<()> {
-        // First update firewall
-        tokio::runtime::Handle::current().block_on(async {
-            manage_firewall(interface, Some(ports), old_ports).await?;
-            self.update_service(ports).await?;
-            Ok::<(), eyre::Error>(())
-        })?;
 
-        self.current_ports = Some(ports.clone());
-        Ok(())
-    }
-
-    fn stop(&mut self) -> eyre::Result<()> {
-        tokio::runtime::Handle::current().block_on(async {
-            Command::new("systemctl")
-                .args(["stop", "slskd.service"])
-                .status()
-                .await?;
-            Ok::<(), eyre::Error>(())
-        })?;
-        Ok(())
-    }
-
-    fn current_ports(&self) -> Option<Ports> {
-        self.current_ports.clone()
-    }
-}
-
+#[derive(Debug)]
 struct TransmissionManager {
     current_ports: Option<Ports>,
 }
@@ -123,29 +137,6 @@ impl TransmissionManager {
             .await?;
             
         Ok(())
-    }
-}
-
-impl PortManager for TransmissionManager {
-    fn apply_ports(&mut self, interface: &str, ports: &Ports, old_ports: Option<&Ports>) -> eyre::Result<()> {
-        // First update firewall
-        tokio::runtime::Handle::current().block_on(async {
-            manage_firewall(interface, Some(ports), old_ports).await?;
-            self.update_service(ports).await?;
-            Ok::<(), eyre::Error>(())
-        })?;
-
-        self.current_ports = Some(ports.clone());
-        Ok(())
-    }
-
-    fn stop(&mut self) -> eyre::Result<()> {
-        // Transmission doesn't need explicit stopping
-        Ok(())
-    }
-
-    fn current_ports(&self) -> Option<Ports> {
-        self.current_ports.clone()
     }
 }
 
@@ -185,7 +176,6 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
                 .await
                 .wrap_err(format!("Failed to check {} rule", proto))?;
 
-            // Add rule if it doesn't exist
             if !check.success() {
                 Command::new("iptables")
                     .args([
@@ -207,7 +197,7 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
 
 async fn run_service(
     args: Args,
-    mut manager: Box<dyn PortManager>,
+    mut manager: PortManager,
     mut shutdown: broadcast::Receiver<()>,
 ) -> eyre::Result<()> {
     let client = natpmp::new_tokio_natpmp_with(args.gateway).await?;
@@ -216,7 +206,7 @@ async fn run_service(
     // Initial port mapping
     match map_ports(&client).await {
         Ok(ports) => {
-            manager.apply_ports(&args.vpn_interface, &ports, None)?;
+            manager.apply_ports(&args.vpn_interface, &ports, None).await?;
         }
         Err(e) => {
             error!("Initial port mapping failed: {}", e);
@@ -229,7 +219,7 @@ async fn run_service(
             _ = interval.tick() => {
                 match map_ports(&client).await {
                     Ok(new_ports) => {
-                        manager.apply_ports(&args.vpn_interface, &new_ports, manager.current_ports().as_ref())?;
+                        manager.apply_ports(&args.vpn_interface, &new_ports, manager.current_ports().as_ref()).await?;
                     }
                     Err(e) => {
                         error!("Port mapping failed: {}", e);
@@ -242,7 +232,7 @@ async fn run_service(
                 if let Some(ports) = manager.current_ports() {
                     manage_firewall(&args.vpn_interface, None, Some(&ports)).await?;
                 }
-                manager.stop()?;
+                manager.stop().await?;
                 break;
             }
         }
@@ -325,9 +315,9 @@ async fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     
-    let manager: Box<dyn PortManager> = match args.service {
-        ServiceType::Slskd => Box::new(SlskdManager::new()),
-        ServiceType::Transmission => Box::new(TransmissionManager::new()),
+    let manager = match args.service {
+        ServiceType::Slskd => PortManager::Slskd(SlskdManager::new()),
+        ServiceType::Transmission => PortManager::Transmission(TransmissionManager::new()),
     };
     
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
