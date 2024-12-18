@@ -44,6 +44,12 @@ enum PortManager {
 
 impl PortManager {
     async fn apply_ports(&mut self, interface: &str, ports: &Ports, old_ports: Option<&Ports>) -> eyre::Result<()> {
+        // Don't do anything if ports haven't changed
+        if Some(ports) == old_ports {
+            debug!("Ports unchanged, skipping update");
+            return Ok(());
+        }
+
         match self {
             Self::Slskd(m) => {
                 manage_firewall(interface, Some(ports), old_ports).await?;
@@ -141,12 +147,17 @@ impl TransmissionManager {
 }
 
 async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: Option<&Ports>) -> eyre::Result<()> {
-    info!("Managing firewall rules: new={:?}, old={:?}", new_ports, old_ports);
+    // Skip if no changes needed
+    if new_ports == old_ports {
+        return Ok(());
+    }
+
+    info!("Updating firewall rules");
 
     // Remove old rules if they exist - don't error if they don't
     if let Some(old) = old_ports {
         for (proto, port) in [("tcp", old.tcp), ("udp", old.udp)] {
-            let status = Command::new("iptables")
+            let _ = Command::new("iptables")
                 .args([
                     "-D", "INPUT",
                     "-p", proto,
@@ -154,19 +165,15 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
                     "-j", "ACCEPT",
                     "-i", interface
                 ])
-                .status()
+                .output()
                 .await?;
-            
-            // Only log if debug logging is enabled
-            if !status.success() {
-                debug!("Rule didn't exist for {}/{}", proto, port);
-            }
         }
     }
 
     // Add new rules only if they don't exist
     if let Some(new) = new_ports {
         for (proto, port) in [("tcp", new.tcp), ("udp", new.udp)] {
+            // Use output() instead of status() to suppress stderr
             let exists = Command::new("iptables")
                 .args([
                     "-C", "INPUT",
@@ -175,12 +182,13 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
                     "-j", "ACCEPT",
                     "-i", interface
                 ])
-                .status()
+                .output()
                 .await?
+                .status
                 .success();
 
             if !exists {
-                Command::new("iptables")
+                let result = Command::new("iptables")
                     .args([
                         "-A", "INPUT",
                         "-p", proto,
@@ -188,11 +196,14 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
                         "-j", "ACCEPT",
                         "-i", interface
                     ])
-                    .status()
-                    .await
-                    .wrap_err(format!("Failed to add new {} rule", proto))?;
+                    .output()
+                    .await?;
                 
-                info!("Added new firewall rule for {}/{}", proto, port);
+                if result.status.success() {
+                    info!("Added firewall rule for {}/{}", proto, port);
+                } else {
+                    error!("Failed to add firewall rule for {}/{}", proto, port);
+                }
             }
         }
     }
@@ -209,27 +220,16 @@ async fn run_service(
     let mut interval = tokio::time::interval(Duration::from_secs(45));
 
     // Initial port mapping
-    match map_ports(&client).await {
-        Ok(ports) => {
-            manager.apply_ports(&args.vpn_interface, &ports, None).await?;
-        }
-        Err(e) => {
-            error!("Initial port mapping failed: {}", e);
-            return Err(e);
-        }
-    }
+    let ports = map_ports(&client).await?;
+    manager.apply_ports(&args.vpn_interface, &ports, None).await?;
 
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                match map_ports(&client).await {
-                    Ok(new_ports) => {
-                        manager.apply_ports(&args.vpn_interface, &new_ports, manager.current_ports().as_ref()).await?;
-                    }
-                    Err(e) => {
-                        error!("Port mapping failed: {}", e);
-                        tokio::time::sleep(Duration::from_secs(60)).await;
-                    }
+                // Just refresh the NAT-PMP mapping, don't reconfigure unless ports change
+                if let Err(e) = map_ports(&client).await {
+                    error!("Port mapping refresh failed: {}", e);
+                    tokio::time::sleep(Duration::from_secs(60)).await;
                 }
             }
             _ = shutdown.recv() => {
