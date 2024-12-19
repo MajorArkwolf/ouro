@@ -22,6 +22,14 @@ struct Args {
     /// Service to manage (slskd or transmission)
     #[arg(long)]
     service: ServiceType,
+
+    /// Transmission RPC username
+    #[arg(long)]
+    rpc_user: Option<String>,
+
+    /// Transmission RPC password
+    #[arg(long)]
+    rpc_pass: Option<String>,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -50,32 +58,28 @@ impl PortManager {
             return Ok(());
         }
 
+        // First handle firewall
+        manage_firewall(interface, Some(ports), old_ports).await?;
+
+        // Then update service
         match self {
-            Self::Slskd(m) => {
-                manage_firewall(interface, Some(ports), old_ports).await?;
-                m.update_service(ports).await?;
-                m.current_ports = Some(ports.clone());
-            }
-            Self::Transmission(m) => {
-                manage_firewall(interface, Some(ports), old_ports).await?;
-                m.update_service(ports).await?;
-                m.current_ports = Some(ports.clone());
-            }
+            Self::Slskd(_) => update_service(&ServiceType::Slskd, ports, None, None).await?,
+            Self::Transmission(_) => update_service(&ServiceType::Transmission, ports, None, None).await?,
         }
+
+        // Update current ports
+        match self {
+            Self::Slskd(m) => m.current_ports = Some(ports.clone()),
+            Self::Transmission(m) => m.current_ports = Some(ports.clone()),
+        }
+
         Ok(())
     }
 
     async fn stop(&mut self) -> eyre::Result<()> {
         match self {
-            Self::Slskd(_) => {
-                Command::new("systemctl")
-                    .args(["stop", "slskd.service"])
-                    .status()
-                    .await?;
-            }
-            Self::Transmission(_) => {
-                // Transmission doesn't need explicit stopping
-            }
+            Self::Slskd(_) => cleanup_service(&ServiceType::Slskd).await?,
+            Self::Transmission(_) => cleanup_service(&ServiceType::Transmission).await?,
         }
         Ok(())
     }
@@ -97,31 +101,6 @@ impl SlskdManager {
     fn new() -> Self {
         Self { current_ports: None }
     }
-
-    async fn update_service(&mut self, ports: &Ports) -> eyre::Result<()> {
-        info!("Configuring slskd with ports TCP={}, UDP={}", ports.tcp, ports.udp);
-        
-        let override_dir = "/run/systemd/system/slskd.service.d";
-        fs::create_dir_all(override_dir).await?;
-
-        fs::write(
-            format!("{}/override.conf", override_dir),
-            format!("[Service]\nEnvironment=SLSKD_SLSK_LISTEN_PORT={}\n", ports.tcp)
-        ).await?;
-
-        Command::new("systemctl")
-            .args(["daemon-reload"])
-            .status()
-            .await?;
-
-        Command::new("systemctl")
-            .args(["restart", "slskd.service"])
-            .status()
-            .await?;
-
-        self.current_ports = Some(ports.clone());
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -132,17 +111,6 @@ struct TransmissionManager {
 impl TransmissionManager {
     fn new() -> Self {
         Self { current_ports: None }
-    }
-
-    async fn update_service(&mut self, ports: &Ports) -> eyre::Result<()> {
-        info!("Configuring transmission with ports TCP={}, UDP={}", ports.tcp, ports.udp);
-        
-        Command::new("transmission-remote")
-            .args(["--port", &ports.tcp.to_string()])
-            .status()
-            .await?;
-            
-        Ok(())
     }
 }
 
@@ -210,6 +178,62 @@ async fn manage_firewall(interface: &str, new_ports: Option<&Ports>, old_ports: 
         }
     }
 
+    Ok(())
+}
+
+async fn update_service(service: &ServiceType, ports: &Ports, rpc_user: Option<&str>, rpc_pass: Option<&str>) -> eyre::Result<()> {
+    match service {
+        ServiceType::Slskd => {
+            info!("Stopping slskd service...");
+            Command::new("systemctl")
+                .args(["stop", "slskd.service"])
+                .status()
+                .await?;
+
+            let override_dir = "/run/systemd/system/slskd.service.d";
+            fs::create_dir_all(override_dir).await?;
+
+            fs::write(
+                format!("{}/override.conf", override_dir),
+                format!("[Service]\nEnvironment=SLSKD_SLSK_LISTEN_PORT={}\n", ports.tcp)
+            ).await?;
+
+            Command::new("systemctl")
+                .args(["daemon-reload"])
+                .status()
+                .await?;
+
+            info!("Starting slskd with new configuration...");
+            Command::new("systemctl")
+                .args(["start", "slskd.service"])
+                .status()
+                .await?;
+        },
+        ServiceType::Transmission => {
+            let mut cmd = Command::new("transmission-remote");
+            if let (Some(user), Some(pass)) = (rpc_user, rpc_pass) {
+                cmd.args(["--auth", &format!("{}:{}", user, pass)]);
+            }
+            cmd.args(["--port", &ports.tcp.to_string()])
+                .status()
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn cleanup_service(service: &ServiceType) -> eyre::Result<()> {
+    if let ServiceType::Slskd = service {
+        info!("Stopping slskd service...");
+        Command::new("systemctl")
+            .args(["stop", "slskd.service"])
+            .status()
+            .await?;
+
+        info!("Removing override configuration...");
+        let override_dir = "/run/systemd/system/slskd.service.d";
+        let _ = fs::remove_dir_all(override_dir).await;  // Ignore if doesn't exist
+    }
     Ok(())
 }
 
