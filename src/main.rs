@@ -294,8 +294,9 @@ async fn run_service(
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(60);
-const LOCAL_PORT: u16 = 1;  // Request port 1, NAT-PMP will assign random port
-const PORT_MAPPING_LIFETIME: u32 = 60;  // 60 second lifetime, will be refreshed
+const LOCAL_PORT: u16 = 0;  // Use port 0 to bind to any available local port
+const REQUESTED_PORT: u16 = 1;  // Request port 1, NAT-PMP will assign a port
+const PORT_MAPPING_LIFETIME: u32 = 60;  // 60 second lifetime
 
 async fn map_ports<S>(client: &NatpmpAsync<S>) -> eyre::Result<Ports>
 where
@@ -328,7 +329,7 @@ where
 {
     debug!("Requesting UDP port mapping...");
     client
-        .send_port_mapping_request(Protocol::UDP, LOCAL_PORT, LOCAL_PORT, PORT_MAPPING_LIFETIME)
+        .send_port_mapping_request(Protocol::UDP, LOCAL_PORT, REQUESTED_PORT, PORT_MAPPING_LIFETIME)
         .await
         .wrap_err("Failed to send UDP mapping request")?;
 
@@ -343,7 +344,7 @@ where
 
     debug!("Requesting TCP port mapping...");
     client
-        .send_port_mapping_request(Protocol::TCP, LOCAL_PORT, LOCAL_PORT, PORT_MAPPING_LIFETIME)
+        .send_port_mapping_request(Protocol::TCP, LOCAL_PORT, REQUESTED_PORT, PORT_MAPPING_LIFETIME)
         .await
         .wrap_err("Failed to send TCP mapping request")?;
 
