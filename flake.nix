@@ -8,55 +8,67 @@
     };
   };
 
-  outputs = inputs@{ flake-parts, ... }:
-  flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
-      
-      perSystem = { config, self', inputs', pkgs, system, ... }: let
-        overlays = [ (import inputs.rust-overlay) ];
-        pkgs = import inputs.nixpkgs {
-          inherit system overlays;
-        };
-      in {
-        packages = {
-          default = pkgs.rustPlatform.buildRustPackage rec {
-            pname = "vlnr";
-            version = "0.1.3";
+  outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } {
+    systems = [
+      "x86_64-linux"
+      "aarch64-linux"
+      "x86_64-darwin"
+      "aarch64-darwin"
+    ];
 
-            src = ./.;
+    debug = true;
 
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-            };
+    perSystem = { config, self', inputs', pkgs, lib, system, ... }: {
+      _module.args.pkgs = import inputs.nixpkgs {
+        inherit system;
+        overlays = [
+          inputs.rust-overlay.overlays.default
+        ];
+      };
 
-            nativeBuildInputs = with pkgs; [
-              pkg-config
+      packages = {
+        default = pkgs.rustPlatform.buildRustPackage {
+          pname = "vlnr";
+          version = "0.1.3";
+
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./src
+              ./Cargo.toml
+              ./Cargo.lock
             ];
-
-            buildInputs = with pkgs; [
-              iptables
-            ];
-
-            shellHook = ''
-              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath buildInputs}"
-            '';
           };
-          
-          vlnr = self'.packages.default;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+          };
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+          ];
         };
 
-        devShells.default = pkgs.mkShell rec {
+        vlnr = self'.packages.default;
+      };
+
+      devShells = {
+        default = pkgs.mkShell rec {
           buildInputs = with pkgs; [
-            rust-bin.stable.latest.default
-            rust-analyzer
+            (rust-bin.stable.latest.default.override (oldAttrs: {
+              extensions = (oldAttrs.extensions or []) ++ [
+                "rust-analyzer"
+              ];
+            }))
             pkg-config
             clang
-            systemdLibs
           ];
+
           shellHook = ''
             export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath buildInputs}"
           '';
         };
       };
     };
+  };
 }
