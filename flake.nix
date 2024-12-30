@@ -28,7 +28,7 @@
 
       packages = {
         default = pkgs.rustPlatform.buildRustPackage {
-          pname = "vlnr";
+          pname = "ouro";
           version = "0.1.3";
 
           src = lib.fileset.toSource {
@@ -49,7 +49,7 @@
           ];
         };
 
-        vlnr = self'.packages.default;
+        ouro = self'.packages.default;
       };
 
       devShells = {
