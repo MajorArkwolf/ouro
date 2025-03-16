@@ -1,7 +1,8 @@
 use std::time::Duration;
 
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use natpmp::{AsyncUdpSocket, NatpmpAsync, Protocol, Response};
+use tokio::time::timeout;
 use tracing::{debug, error, info};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -12,6 +13,7 @@ pub struct Ports {
 
 pub const MAX_RETRIES: u32 = 3;
 pub const RETRY_DELAY: Duration = Duration::from_secs(60);
+pub const TIMEOUT: Duration = Duration::from_secs(45);
 pub const LOCAL_PORT: u16 = 0; // Use port 0 to bind to any available local port
 pub const REQUESTED_PORT: u16 = 1; // Request port 1, NAT-PMP will assign a port
 pub const PORT_MAPPING_LIFETIME: u32 = 60; // 60 second lifetime
@@ -46,19 +48,22 @@ where
     S: AsyncUdpSocket,
 {
     debug!("Requesting UDP port mapping...");
-    client
-        .send_port_mapping_request(
+    timeout(
+        TIMEOUT,
+        client.send_port_mapping_request(
             Protocol::UDP,
             LOCAL_PORT,
             REQUESTED_PORT,
             PORT_MAPPING_LIFETIME,
-        )
-        .await
-        .wrap_err("Failed to send UDP mapping request")?;
+        ),
+    )
+    .await
+    .wrap_err("UDP mapping request timeout")?
+    .wrap_err("Failed to send UDP mapping request")?;
 
-    let udp_response = client
-        .read_response_or_retry()
+    let udp_response = timeout(TIMEOUT, client.read_response_or_retry())
         .await
+        .wrap_err("UDP mapping response timeout")?
         .wrap_err("Failed to receive UDP mapping response")?;
 
     let udp_mapped_port = match udp_response {
@@ -68,19 +73,22 @@ where
     debug!("Got UDP port: {}", udp_mapped_port);
 
     debug!("Requesting TCP port mapping...");
-    client
-        .send_port_mapping_request(
+    timeout(
+        TIMEOUT,
+        client.send_port_mapping_request(
             Protocol::TCP,
             LOCAL_PORT,
             REQUESTED_PORT,
             PORT_MAPPING_LIFETIME,
-        )
-        .await
-        .wrap_err("Failed to send TCP mapping request")?;
+        ),
+    )
+    .await
+    .wrap_err("TCP mapping request timeout")?
+    .wrap_err("Failed to send TCP mapping request")?;
 
-    let tcp_response = client
-        .read_response_or_retry()
+    let tcp_response = timeout(TIMEOUT, client.read_response_or_retry())
         .await
+        .wrap_err("TCP mapping response timeout")?
         .wrap_err("Failed to receive TCP mapping response")?;
 
     let tcp_mapped_port = match tcp_response {

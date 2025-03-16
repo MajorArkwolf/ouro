@@ -4,9 +4,9 @@ use tokio::{fs, process::Command, sync::broadcast};
 use tracing::{debug, error, info};
 
 use crate::{
-    firewall::manage_firewall,
-    port_manager::{map_ports, Ports},
     Cli,
+    firewall::manage_firewall,
+    port_manager::{Ports, map_ports},
 };
 
 pub(crate) trait Service {

@@ -29,7 +29,7 @@
       packages = {
         default = pkgs.rustPlatform.buildRustPackage {
           pname = "ouro";
-          version = "0.1.3";
+          version = "0.1.4";
 
           src = lib.fileset.toSource {
             root = ./.;

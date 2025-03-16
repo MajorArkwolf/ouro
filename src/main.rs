@@ -51,7 +51,10 @@ async fn main() -> eyre::Result<()> {
         ServiceType::Slskd => ServiceData::Slskd(Slskd {
             current_ports: Ports { udp: 0, tcp: 0 },
         }),
-        ServiceType::Transmission(TransmissionArgs { ref rpc_user, ref rpc_pass }) => {
+        ServiceType::Transmission(TransmissionArgs {
+            ref rpc_user,
+            ref rpc_pass,
+        }) => {
             let rpc_credentials = match (rpc_user, rpc_pass) {
                 (Some(username), Some(password)) => Some(Credentials {
                     username: username.clone(),
