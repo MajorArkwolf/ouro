@@ -101,6 +101,12 @@
                     environment = {
                       "RUST_LOG" = "debug";
                     };
+                    path = [
+                      pkgs.iptables
+                    ] ++ lib.optionals ouroConfig.transmission.enable [
+                      # NOTE: used for `transmission-remote`
+                      config.services.transmission.package
+                    ];
                     serviceConfig = let
                       inherit
                         (flakePartsConfig.allSystems.${pkgs.hostPlatform.system}.packages)
