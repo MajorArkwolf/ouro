@@ -66,6 +66,23 @@
                               };
                             };
                           };
+                          transmission = lib.mkOption {
+                            default = {};
+                            type = types.submodule {
+                              options = {
+                                enable = lib.mkEnableOption "Soulseek support";
+                                # TODO: needs modificaitons in `ouro` itself
+                                #       to allow loading from files
+                                # rpc_file = ...
+                                RPC_USER = lib.mkOption {
+                                  type = types.str;
+                                };
+                                RPC_PASS = lib.mkOption {
+                                  type = types.str;
+                                };
+                              };
+                            };
+                          };
                         };
                       });
                     };
@@ -73,18 +90,10 @@
                 }));
               };
             };
+            # TODO(reo101): assert that only one of `slskd` and `transmission` are enabled
+            # slskd.enable -> !transmission.enable
+            # transmission.enable -> !slskd.enable
             config = {
-              # ids.uids.ouro = 0;
-              # ids.gids.ouro = 0;
-              # users.groups.ouro = {
-              #   group = config.ids.gids.ouro;
-              # };
-              # users.users.ouro = {
-              #   group = "ouro";
-              #   uid = config.ids.uids.ouro;
-              #   description = "Ouro user";
-              #   home = "/var/lib/ouro";
-              # };
               systemd.services = lib.pipe config.vpnNamespaces [
                 # name = { ..., ouro = { STUFF }, ... }
                 (lib.mapAttrs (vpnNamespace: vpnNamespaceConfig: vpnNamespaceConfig.ouro))
@@ -94,11 +103,12 @@
                 (lib.mapAttrs' (vpnNamespace: ouroConfig:
                   lib.nameValuePair "ouro-${vpnNamespace}" {
                     description = ''
-                      Ouro stuff for ${vpnNamespace}, TODO
+                      Ouro stuff for ${vpnNamespace}
                     '';
                     wantedBy = ["multi-user.target"];
                     after = [ "slskd.service" "${vpnNamespace}.service" ];
                     environment = {
+                      # TODO(reo101): toggle with a module option
                       "RUST_LOG" = "debug";
                     };
                     path = [
@@ -117,12 +127,16 @@
                         gateway
                         interface
                         ;
+                      ouroArgs = if ouroConfig.slskd.enable then
+                        "slskd"
+                      else if ouroConfig.transmission.enable then
+                        "transmission --rpc-user ${ouroConfig.transmission.RPC_USER} --rpc-pass ${ouroConfig.transmission.RPC_PASS}"
+                      else
+                        throw "Either `slskd` or `transmission` need to be enabled!";
                     in {
-                      # TODO(74k1): more systemd module stuff
-                      # User = "ouro";
-                      # Group = "ouro";
                       ExecStart = ''
-                        ${lib.getExe' pkgs.iproute2 "ip"} netns exec ${vpnNamespace} ${lib.getExe pkgs.bashNonInteractive} -c "${lib.getExe ouro} --gateway ${gateway} --vpn-interface ${interface} slskd"
+                        ${lib.getExe' pkgs.iproute2 "ip"} netns exec ${vpnNamespace} \
+                          ${lib.getExe pkgs.bashNonInteractive} -c "${lib.getExe ouro} --gateway ${gateway} --vpn-interface ${interface} ${ouroArgs}"
                       '';
                       Restart = "always";
                     };
