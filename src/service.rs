@@ -224,7 +224,7 @@ impl Service for Transmission {
     async fn update(&self, ports: &Ports) -> eyre::Result<()> {
         let mut cmd = Command::new("transmission-remote");
         if let Some(addr) = &self.address {
-            cmd.args([addr]);
+            cmd.arg(addr);
         }
 
         // TODO: leaked in `ps`, pass through STDIN
