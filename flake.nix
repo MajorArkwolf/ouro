@@ -84,7 +84,7 @@
                                   type = types.str;
                                   default = "127.0.0.1:9091";
                                   description = ''
-                                    The address and port oura will provide transmission remote for
+                                    The address and port ouro will provide transmission remote for
                                     it to connect to. Can be <IP>:<Port> or just <IP>.
                                   '';
                                 };
