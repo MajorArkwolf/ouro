@@ -40,6 +40,10 @@ pub struct TransmissionArgs {
     /// Transmission RPC password
     #[arg(long)]
     pub rpc_pass: Option<String>,
+
+    /// Transmission address
+    #[arg(long)]
+    pub address: Option<String>,
 }
 
 #[tokio::main]
@@ -54,6 +58,7 @@ async fn main() -> eyre::Result<()> {
         ServiceType::Transmission(TransmissionArgs {
             ref rpc_user,
             ref rpc_pass,
+            ref address,
         }) => {
             let rpc_credentials = match (rpc_user, rpc_pass) {
                 (Some(username), Some(password)) => Some(Credentials {
@@ -62,8 +67,14 @@ async fn main() -> eyre::Result<()> {
                 }),
                 _ => None,
             };
+
+            if let Some(addr) = address {
+                info!("Using {} for transmission", addr);
+            }
+
             ServiceData::Transmission(Transmission {
                 rpc_credentials,
+                address: address.clone(),
                 current_ports: Ports { udp: 0, tcp: 0 },
             })
         }

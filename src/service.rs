@@ -202,6 +202,7 @@ impl Service for Slskd {
 #[derive(Debug, Clone)]
 pub struct Transmission {
     pub rpc_credentials: Option<Credentials>,
+    pub address: Option<String>,
     pub current_ports: Ports,
 }
 
@@ -222,6 +223,10 @@ impl Service for Transmission {
 
     async fn update(&self, ports: &Ports) -> eyre::Result<()> {
         let mut cmd = Command::new("transmission-remote");
+        if let Some(addr) = &self.address {
+            cmd.args([addr]);
+        }
+
         // TODO: leaked in `ps`, pass through STDIN
         self.rpc_credentials
             .as_ref()
