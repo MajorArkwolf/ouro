@@ -4,7 +4,7 @@ use tokio::{fs, process::Command, sync::broadcast};
 use tracing::{debug, error, info};
 
 use crate::{
-    Cli,
+    GlobalArgs,
     firewall::manage_firewall,
     port_manager::{Ports, map_ports},
 };
@@ -50,7 +50,11 @@ pub(crate) trait Service {
         Ok(())
     }
 
-    async fn run(&mut self, args: &Cli, mut shutdown: broadcast::Receiver<()>) -> eyre::Result<()> {
+    async fn run(
+        &mut self,
+        args: &GlobalArgs,
+        mut shutdown: broadcast::Receiver<()>,
+    ) -> eyre::Result<()> {
         let client = natpmp::new_tokio_natpmp_with(args.gateway).await?;
         let mut interval = tokio::time::interval(Duration::from_secs(45));
 
@@ -143,7 +147,11 @@ impl Service for ServiceData {
         }
     }
 
-    async fn run(&mut self, args: &Cli, shutdown: broadcast::Receiver<()>) -> eyre::Result<()> {
+    async fn run(
+        &mut self,
+        args: &GlobalArgs,
+        shutdown: broadcast::Receiver<()>,
+    ) -> eyre::Result<()> {
         match self {
             ServiceData::Slskd(slskd) => slskd.run(args, shutdown).await,
             ServiceData::Transmission(transmission) => transmission.run(args, shutdown).await,
